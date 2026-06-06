@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+/* 自定义工具类保持不变 */
+.typing-cursor::after { content: '▍'; animation: blink 1s step-start infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
