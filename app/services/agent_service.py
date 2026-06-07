@@ -5,10 +5,49 @@ import jieba
 import dashscope
 from app.core.config import settings
 from app.services.tools import search_internet, get_real_weather, AGENT_TOOLS
-from app.database.chroma_store import query_vector_db
+from app.database.chroma_store import knowledge_collection
 from app.database.sqlite_store import save_message_with_source, get_recent_messages
 
 dashscope.api_key = settings.DASHSCOPE_API_KEY
+
+# DP: 全局 HybridRetriever + Reranker 实例（懒加载）
+_retriever = None
+_reranker = None
+
+
+def _get_retriever():
+    global _retriever
+    if _retriever is None:
+        from app.core.retriever import HybridRetriever
+        # 从 ChromaDB 拉取所有文档用于 BM25 索引
+        try:
+            all_docs = knowledge_collection.get()["documents"] or []
+        except Exception:
+            all_docs = []
+        _retriever = HybridRetriever(all_docs)
+    return _retriever
+
+
+def _get_reranker():
+    """DP: 懒加载 Reranker — 阿里云 API，无需 device 参数"""
+    global _reranker
+    if _reranker is None:
+        from app.core.reranker import DocumentReranker
+        _reranker = DocumentReranker()
+    return _reranker
+
+
+def _hybrid_retrieve(query: str, top_k: int = 10) -> list[str]:
+    """DP: 混合检索 = BM25关键词 + ChromaDB语义 → 去重 → Rerank精排 → Top2"""
+    retriever = _get_retriever()
+    reranker = _get_reranker()
+    # 1. 混合检索
+    candidates = retriever.hybrid_search(query, top_k=top_k)
+    if not candidates:
+        return []
+    # 2. Rerank 精排（DP: DashScope API，内置容错，失败自动回退 top_k）
+    candidates = reranker.rerank(query, candidates, top_k=3)
+    return candidates[:2]
 
 
 # DP: 兼容 dashscope 返回的 dict 和 object 两种 tool_calls 格式
@@ -42,8 +81,8 @@ async def qwen_llm_generator(query: str, session_id: str):
     source_text = ""
 
     try:
-        # DP: 1. ChromaDB 向量检索
-        retrieved_docs = query_vector_db(query, n_results=2)
+        # DP: 1. 混合检索 = BM25 + ChromaDB → Rerank 精排
+        retrieved_docs = _hybrid_retrieve(query)
         source_text = _format_source(retrieved_docs, query)
 
         # DP: 2. 加载最近 6 条聊天历史

@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -7,7 +8,24 @@ from app.api import chat
 from app.database.sqlite_store import init_db
 from app.database.chroma_store import auto_load_docs
 
-app = FastAPI(title="Advanced Agentic RAG Gateway")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    import sys
+    from app.core.config import settings
+    init_db()
+    auto_load_docs()
+    msg = (
+        f"\n[INFO] Advanced RAG Gateway started!\n"
+        f"[INFO] Model: {settings.DEFAULT_MODEL}\n"
+        f"[INFO] API: http://127.0.0.1:8000/api\n"
+        f"[INFO] Frontend: http://127.0.0.1:8000\n"
+    )
+    sys.stdout.write(msg)
+    sys.stdout.flush()
+    yield
+
+app = FastAPI(title="Advanced Agentic RAG Gateway", lifespan=lifespan)
 
 # CORS 配置
 app.add_middleware(
@@ -57,14 +75,6 @@ else:
         return FileResponse(index_path)
 
 
-# ==================== 启动事件 ====================
-
-@app.on_event("startup")
-async def startup_event():
-    init_db()
-    auto_load_docs()
-    from app.core.config import settings
-    print("[INFO] Advanced RAG Gateway started successfully!")
-    print(f"[INFO] Model: {settings.DEFAULT_MODEL}")
-    print(f"[INFO] API: http://127.0.0.1:8000/api")
-    print(f"[INFO] Frontend: http://127.0.0.1:8000")
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
