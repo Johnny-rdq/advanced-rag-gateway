@@ -16,10 +16,10 @@ async def lifespan(app: FastAPI):
     init_db()
     auto_load_docs()
     msg = (
-        f"\n[INFO] Advanced RAG Gateway started!\n"
-        f"[INFO] Model: {settings.DEFAULT_MODEL}\n"
-        f"[INFO] API: http://127.0.0.1:8000/api\n"
-        f"[INFO] Frontend: http://127.0.0.1:8000\n"
+        f"\n[启动] Advanced RAG Gateway 启动成功！\n"
+        f"[模型] {settings.DEFAULT_MODEL}\n"
+        f"[接口] http://127.0.0.1:8000/api\n"
+        f"[前端] http://127.0.0.1:8000\n"
     )
     sys.stdout.write(msg)
     sys.stdout.flush()

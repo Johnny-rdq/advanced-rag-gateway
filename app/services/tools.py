@@ -33,10 +33,10 @@ def _search_ddg(query: str, max_results: int = 3) -> list[dict]:
                 })
         return results
     except ImportError:
-        print("[WARN] ddgs not installed. Run: pip install ddgs")
+        print("[警告] ddgs 未安装，请执行: pip install ddgs")
         return []
     except Exception as e:
-        print(f"[WARN] DDG search failed: {e}")
+        print(f"[警告] DDG 搜索失败: {e}")
         return []
 
 
@@ -56,12 +56,12 @@ def _get_tavily_client():
     try:
         from tavily import TavilyClient
         _tavily_client = TavilyClient(api_key=settings.TAVILY_API_KEY)
-        print("[INFO] Tavily search client initialized (backup)!")
+        print("[搜索] Tavily 搜索客户端已初始化（备用方案）！")
     except ImportError:
-        print("[WARN] tavily-python not installed")
+        print("[警告] tavily-python 未安装")
         _tavily_client = False
     except Exception as e:
-        print(f"[WARN] Tavily init failed: {e}")
+        print(f"[警告] Tavily 初始化失败: {e}")
         _tavily_client = False
     return _tavily_client if _tavily_client is not False else None
 
@@ -81,7 +81,7 @@ def _search_tavily(query: str, max_results: int = 3) -> list[dict]:
         return [{"title": r.get("title", "无标题"), "content": r.get("content", ""), "url": r.get("url", "")}
                 for r in results]
     except Exception as e:
-        print(f"[WARN] Tavily search error: {e}")
+        print(f"[警告] Tavily 搜索失败: {e}")
         return []
 
 

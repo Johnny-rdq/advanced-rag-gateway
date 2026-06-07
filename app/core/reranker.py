@@ -14,7 +14,7 @@ class DocumentReranker:
             model: DashScope Reranker 模型名称（默认 gte-rerank）
         """
         self.model = model or settings.RERANK_MODEL
-        print(f"[INFO] Reranker ready! (model={self.model}, via DashScope API)")
+        print(f"[重排] Reranker 就绪 (模型={self.model}, 通过 DashScope API)")
 
     def rerank(self, query: str, documents: list[str], top_k: int = 3) -> list[str]:
         """
@@ -42,10 +42,10 @@ class DocumentReranker:
                 results = resp.output.get("results", [])
                 return [r["document"]["text"] for r in results[:top_k]]
             else:
-                print(f"[WARN] Rerank API failed ({resp.status_code}): {resp.message}")
+                print(f"[警告] 重排 API 失败 ({resp.status_code}): {resp.message}")
                 return documents[:top_k]
         except Exception as e:
-            print(f"[WARN] Rerank API error: {e}")
+            print(f"[警告] 重排 API 异常: {e}")
             return documents[:top_k]
 
 
@@ -74,5 +74,5 @@ if __name__ == "__main__":
     reranker = DocumentReranker()
     best = reranker.rerank(test_query, test_docs, top_k=1)
 
-    print(f"\n❓ 问题: {test_query}")
-    print(f"🥇 Rerank 最匹配: {best[0] if best else '无结果'}")
+    print(f"\n问题: {test_query}")
+    print(f"Rerank 最匹配: {best[0] if best else '无结果'}")

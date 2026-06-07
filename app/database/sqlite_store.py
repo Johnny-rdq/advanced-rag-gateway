@@ -39,11 +39,11 @@ def init_db():
         cursor.execute("SELECT context FROM chat_messages LIMIT 1")
     except sqlite3.OperationalError:
         cursor.execute("ALTER TABLE chat_messages ADD COLUMN context TEXT DEFAULT ''")
-        print("[INFO] Added context column to chat_messages")
+        print("[数据库] 已添加 context 列到 chat_messages")
 
     conn.commit()
     conn.close()
-    print("[INFO] SQLite database initialized!")
+    print("[数据库] SQLite 数据库初始化完成！")
 
 
 # ==================== 会话管理 ====================

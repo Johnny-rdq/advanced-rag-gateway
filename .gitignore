@@ -28,25 +28,12 @@ Thumbs.db
 # 日志
 *.log
 
-# 模型文件（太大，不上传）
-bge-reranker-base/
-
 # Claude 本地配置
 .claude/
 
 # 非文本测试文件
-test.py
 docs/*.docx
 docs/*.pdf
 
 # 临时文件
 output/
-test_output*.txt
-test_*.txt
-final_test.txt
-speed_test.txt
-agent_debug.log
-server_stderr.log
-check_wx.txt
-debug_wx.txt
-tw*.txt

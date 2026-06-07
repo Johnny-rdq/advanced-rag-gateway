@@ -64,10 +64,10 @@ try:
         name=COLLECTION_NAME,
         embedding_function=embedding_fn,
     )
-    print(f"[INFO] Connected to existing collection '{COLLECTION_NAME}' ({knowledge_collection.count()} docs)")
+    print(f"[向量库] 已连接现有集合 '{COLLECTION_NAME}' ({knowledge_collection.count()} 条文档)")
 except Exception:
     # DP: 集合不存在或嵌入函数不匹配 → 删掉旧数据重建
-    print("[INFO] Collection mismatch or not found, recreating...")
+    print("[向量库] 集合不匹配或不存在，正在重建...")
     try:
         chroma_client.delete_collection(name=COLLECTION_NAME)
     except Exception:
@@ -77,7 +77,7 @@ except Exception:
         embedding_function=embedding_fn,
         metadata={"hnsw:space": "cosine"}
     )
-    print(f"[INFO] Created new collection '{COLLECTION_NAME}'")
+    print(f"[向量库] 已创建新集合 '{COLLECTION_NAME}'")
 
 
 # DP: SHA256 替代不稳定的 hash() 生成文档 ID
@@ -94,7 +94,7 @@ def add_documents_to_db(doc_chunks: list):
     chunk_ids = [_stable_id(chunk, i) for i, chunk in enumerate(doc_chunks)]
     # upsert: 已存在的 ID 会更新，新 ID 会插入
     knowledge_collection.upsert(documents=doc_chunks, ids=chunk_ids)
-    print(f"[INFO] Successfully wrote {len(doc_chunks)} chunks to ChromaDB!")
+    print(f"[向量库] 成功写入 {len(doc_chunks)} 条文档片段到 ChromaDB！")
 
 
 def query_vector_db(query: str, n_results: int = 5):
@@ -109,7 +109,7 @@ def query_vector_db(query: str, n_results: int = 5):
         if results.get('documents') and len(results['documents'][0]) > 0:
             return results['documents'][0]
     except Exception as e:
-        print(f"[ERROR] Vector query failed: {e}")
+        print(f"[错误] 向量查询失败: {e}")
     return []
 
 
@@ -121,16 +121,16 @@ def get_collection_count() -> int:
 def auto_load_docs():
     """开机自动扫描 docs 文件夹，智能判定是否需要重新入库"""
     if knowledge_collection.count() > 0:
-        print(f"[INFO] Vector DB cache hit! {knowledge_collection.count()} chunks already exist, skipping load.")
+        print(f"[向量库] 缓存命中！已存在 {knowledge_collection.count()} 条文档片段，跳过加载。")
         return
 
     docs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "docs")
     if not os.path.exists(docs_dir):
         os.makedirs(docs_dir, exist_ok=True)
-        print("[INFO] Created empty docs folder. You can put files in it anytime!")
+        print("[知识库] 已创建空的 docs 文件夹，随时可以放入文件！")
         return
 
-    print("[INFO] Vector DB is empty, scanning docs folder...")
+    print("[知识库] 向量库为空，正在扫描 docs 文件夹...")
     try:
         import pdfplumber
     except ImportError:
@@ -157,12 +157,12 @@ def auto_load_docs():
             if text.strip():
                 chunks = [text[i:i + 400] for i in range(0, len(text), 400) if text[i:i + 400].strip()]
                 all_chunks.extend(chunks)
-                print(f"[INFO] Loaded [{filename}] -> {len(chunks)} chunks")
+                print(f"[知识库] 已加载 [{filename}] → {len(chunks)} 条片段")
         except Exception as e:
-            print(f"[WARN] Failed to read [{filename}]: {e}")
+            print(f"[警告] 读取文件 [{filename}] 失败: {e}")
 
     if all_chunks:
         add_documents_to_db(all_chunks)
-        print(f"[INFO] Knowledge base built! Total {len(all_chunks)} chunks.")
+        print(f"[知识库] 知识库构建完成！共 {len(all_chunks)} 条文档片段。")
     else:
-        print("[INFO] No parseable documents found in docs folder.")
+        print("[知识库] docs 文件夹中未找到可解析的文档。")
