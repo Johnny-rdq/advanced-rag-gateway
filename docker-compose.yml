@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  rag-gateway:
+    build: .
+    container_name: advanced-rag-gateway
+    ports:
+      - "8000:8000"
+    volumes:
+      # 持久化向量库数据
+      - ./my_vector_db:/app/my_vector_db
+      # 持久化 SQLite 聊天记录
+      - ./app/database/rag_system.db:/app/app/database/rag_system.db
+      # 本地知识库文档（热加载）
+      - ./docs:/app/docs
+    env_file:
+      - .env
+    restart: unless-stopped

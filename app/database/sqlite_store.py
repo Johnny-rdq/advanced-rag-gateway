@@ -21,7 +21,7 @@ def init_db():
         )
     ''')
 
-    # DP: context 列存储 RAG 来源，切换对话不丢失
+    # context 列存储 RAG 来源，切换对话不丢失
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chat_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,7 +34,7 @@ def init_db():
         )
     ''')
 
-    # DP: 兼容旧表迁移
+    # 兼容旧表迁移（无 context 列则添加）
     try:
         cursor.execute("SELECT context FROM chat_messages LIMIT 1")
     except sqlite3.OperationalError:

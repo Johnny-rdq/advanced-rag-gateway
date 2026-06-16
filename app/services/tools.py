@@ -1,24 +1,23 @@
 import requests
-import json
 from app.core.config import settings
 
-# DP: 所有工具函数 — 天气(wttr.in) + 联网搜索(DDG免费 + Tavily备用)
+# 工具函数 — 天气(wttr.in) + 联网搜索(DDG免费 + Tavily备用)
 
-# DP: 记录最近一次联网搜索的来源 URL，供 agent_service 显示
+# 记录最近一次联网搜索的来源 URL，供 agent_service 显示
 _last_web_sources: list[str] = []
 
 
 def get_last_web_sources() -> list[str]:
-    """DP: 获取最近一次联网搜索的来源 URL"""
+    """获取最近一次联网搜索的来源 URL"""
     return _last_web_sources
 
 
 # ==================== DuckDuckGo 免费搜索 ====================
 
 def _search_ddg(query: str, max_results: int = 3) -> list[dict]:
-    """DP: DuckDuckGo 免费搜索 — 无需 API Key，国内直连"""
+    """DuckDuckGo 免费搜索 — 无需 API Key，国内直连"""
     try:
-        # DP: 兼容新旧包名（ddgs >= 7.0 或 duckduckgo_search < 7.0）
+        # 兼容新旧包名（ddgs >= 7.0 或 duckduckgo_search < 7.0）
         try:
             from ddgs import DDGS
         except ImportError:
@@ -42,12 +41,11 @@ def _search_ddg(query: str, max_results: int = 3) -> list[dict]:
 
 # ==================== Tavily 联网搜索（备用） ====================
 
-# 延迟初始化 Tavily 客户端
 _tavily_client = None
 
 
 def _get_tavily_client():
-    """DP: 延迟初始化 Tavily 客户端，DDG 失败时备用"""
+    """延迟初始化 Tavily 客户端，DDG 失败时备用"""
     global _tavily_client
     if _tavily_client is not None:
         return _tavily_client
@@ -67,7 +65,7 @@ def _get_tavily_client():
 
 
 def _search_tavily(query: str, max_results: int = 3) -> list[dict]:
-    """DP: Tavily 备用搜索"""
+    """Tavily 备用搜索"""
     client = _get_tavily_client()
     if client is None:
         return []
@@ -88,21 +86,21 @@ def _search_tavily(query: str, max_results: int = 3) -> list[dict]:
 # ==================== 统一搜索入口 ====================
 
 def search_internet(query: str) -> str:
-    """DP: 联网搜索 — DDG(免费)优先，Tavily 备用，国内也能用"""
+    """联网搜索 — DDG(免费)优先，Tavily 备用"""
     global _last_web_sources
     _last_web_sources = []
 
-    # 1. 先试 DDG（免费，无需 API Key，国内可直连）
+    # 先试 DDG（免费，无需 API Key，国内可直连）
     results = _search_ddg(query, max_results=3)
 
-    # 2. DDG 失败或无结果，试 Tavily
+    # DDG 失败或无结果，试 Tavily
     if not results:
         results = _search_tavily(query, max_results=3)
 
     if not results:
         return "未搜到相关信息。"
 
-    # DP: 记录来源 URL
+    # 记录来源 URL
     _last_web_sources = [r.get("url", "") for r in results if r.get("url")]
 
     lines = []
@@ -118,7 +116,6 @@ def search_internet(query: str) -> str:
 def get_real_weather(location: str) -> str:
     """通过 wttr.in 获取真实天气（精简版，快速返回）"""
     try:
-        # 直接用简洁文本格式，5秒超时
         url = f"https://wttr.in/{location}?format=%l:+%c+%t,+%w,+%h&lang=zh"
         response = requests.get(url, timeout=5, headers={"User-Agent": "curl"})
         if response.status_code == 200:
@@ -156,7 +153,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "search_internet",
-            "description": "DP: 联网搜索最新资讯、新闻或实时信息。禁止用于查询天气（天气请用 get_real_weather）。仅在本地文档无法回答时使用。",
+            "description": "联网搜索最新资讯、新闻或实时信息。禁止用于查询天气（天气请用 get_real_weather）。仅在本地文档无法回答时使用。",
             "parameters": {
                 "type": "object",
                 "properties": {

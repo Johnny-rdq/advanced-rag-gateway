@@ -10,8 +10,7 @@ dashscope.api_key = settings.DASHSCOPE_API_KEY
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "my_vector_db")
 
 
-# DP: 阿里云 DashScope EmbeddingFunction — 替代 sentence-transformers + BGE 本地模型
-# 直接调国内 API，无需从 HuggingFace/ModelScope 下载模型，告别魔法
+# 阿里云 DashScope EmbeddingFunction — 替代本地 sentence-transformers 模型，直接调 API
 class DashScopeEmbeddingFunction:
     """自定义 ChromaDB 嵌入函数，调用阿里云 DashScope TextEmbedding API"""
 
@@ -25,7 +24,7 @@ class DashScopeEmbeddingFunction:
         self.batch_size = batch_size
 
     def name(self) -> str:
-        """DP: ChromaDB 要求 embedding function 必须有 name() 方法"""
+        """ChromaDB 要求 embedding function 必须有 name() 方法"""
         return f"dashscope-{self.model}"
 
     def __call__(self, input: list[str]) -> list[list[float]]:
@@ -34,7 +33,7 @@ class DashScopeEmbeddingFunction:
             return []
 
         all_embeddings = []
-        # DP: 分批调阿里云 TextEmbedding API（v2 单批上限25条）
+        # 分批调阿里云 TextEmbedding API（v2 单批上限25条）
         for i in range(0, len(input), self.batch_size):
             batch = input[i:i + self.batch_size]
             resp = dashscope.TextEmbedding.call(
@@ -66,7 +65,7 @@ try:
     )
     print(f"[向量库] 已连接现有集合 '{COLLECTION_NAME}' ({knowledge_collection.count()} 条文档)")
 except Exception:
-    # DP: 集合不存在或嵌入函数不匹配 → 删掉旧数据重建
+    # 集合不存在或嵌入函数不匹配 → 删掉旧数据重建
     print("[向量库] 集合不匹配或不存在，正在重建...")
     try:
         chroma_client.delete_collection(name=COLLECTION_NAME)
@@ -80,7 +79,7 @@ except Exception:
     print(f"[向量库] 已创建新集合 '{COLLECTION_NAME}'")
 
 
-# DP: SHA256 替代不稳定的 hash() 生成文档 ID
+# SHA256 替代不稳定的 hash() 生成文档 ID
 def _stable_id(text: str, index: int) -> str:
     """用 SHA256 生成稳定 ID，替代不稳定的 hash()"""
     h = hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]

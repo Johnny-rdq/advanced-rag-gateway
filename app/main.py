@@ -11,18 +11,15 @@ from app.database.chroma_store import auto_load_docs
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    import sys
     from app.core.config import settings
     init_db()
     auto_load_docs()
-    msg = (
+    print(
         f"\n[启动] Advanced RAG Gateway 启动成功！\n"
         f"[模型] {settings.DEFAULT_MODEL}\n"
         f"[接口] http://127.0.0.1:8000/api\n"
         f"[前端] http://127.0.0.1:8000\n"
     )
-    sys.stdout.write(msg)
-    sys.stdout.flush()
     yield
 
 app = FastAPI(title="Advanced Agentic RAG Gateway", lifespan=lifespan)
@@ -47,7 +44,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # React 构建产物目录
 REACT_DIST = os.path.join(ROOT_DIR, "rag-frontend", "dist")
 
-# DP: 自动检测 React/HTML 前端，React 优先
+# 自动检测 React/HTML 前端，React 优先
 if os.path.exists(REACT_DIST):
     # 挂载静态资源
     assets_dir = os.path.join(REACT_DIST, "assets")

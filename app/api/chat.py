@@ -31,7 +31,6 @@ async def debug_config():
     }
 
 
-# DP: 会话管理 API (CRUD) + 聊天 SSE + 文件上传 + 调试端点
 # ==================== 请求模型 ====================
 
 class ChatRequest(BaseModel):
