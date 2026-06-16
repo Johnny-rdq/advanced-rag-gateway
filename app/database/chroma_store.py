@@ -29,6 +29,14 @@ class DashScopeEmbeddingFunction:
 
     def __call__(self, input: list[str]) -> list[list[float]]:
         """ChromaDB 调用入口 — 接收文本列表，返回嵌入向量列表"""
+        return self._embed(input)
+
+    def embed_query(self, input: list[str]) -> list[list[float]]:
+        """ChromaDB 1.x 查询专用入口 — 与 __call__ 相同逻辑"""
+        return self._embed(input)
+
+    def _embed(self, input: list[str]) -> list[list[float]]:
+        """实际嵌入逻辑：分批调阿里云 TextEmbedding API"""
         if not input:
             return []
 

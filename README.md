@@ -206,6 +206,14 @@ docker compose down
 
 ---
 
+## 🐛 已知问题 & 修复记录
+
+| 日期 | 问题 | 修复 |
+|------|------|------|
+| 2026-06-16 | ChromaDB 1.5.x 查询时报 `'DashScopeEmbeddingFunction' object has no attribute 'embed_query'` | 新增 `embed_query` 方法，兼容 ChromaDB 1.x 协议 |
+
+---
+
 ## 📄 许可证
 
 MIT License
