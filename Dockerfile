@@ -1,5 +1,5 @@
 # ============ 第一阶段：构建 React 前端 ============
-FROM node:18-alpine AS frontend-builder
+FROM node:20-alpine AS frontend-builder
 
 WORKDIR /frontend
 
