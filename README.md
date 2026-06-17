@@ -69,7 +69,7 @@ docker compose up -d
 #### 1. 环境要求
 
 - Python 3.10+
-- Node.js 18+（用于构建前端）
+- Node.js 22+（用于构建前端）
 
 #### 2. 安装依赖
 
@@ -104,7 +104,7 @@ TAVILY_API_KEY=tvly-xxxxxxxxxxxxxxxx
 #### 5. 启动服务
 
 ```bash
-python -m app.main
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 访问：
@@ -211,6 +211,8 @@ docker compose down
 | 日期 | 问题 | 修复 |
 |------|------|------|
 | 2026-06-16 | ChromaDB 1.5.x 查询时报 `'DashScopeEmbeddingFunction' object has no attribute 'embed_query'` | 新增 `embed_query` 方法，兼容 ChromaDB 1.x 协议 |
+| 2026-06-17 | Docker 构建失败：Vite 需要 Node.js 20.19+ | 升级 `node:18-alpine` → `node:22-alpine` |
+| 2026-06-17 | Docker 构建 pip 下载慢/超时 | 切换清华 PyPI 镜像 + 淘宝 npm 镜像，删除多余的 gcc 安装 |
 
 ---
 
