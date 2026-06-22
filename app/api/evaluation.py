@@ -1,128 +1,8 @@
-# 后端 RAGAS 评估 API — 量化 RAG 质量
-from fastapi import APIRouter, HTTPException  # 后端 FastAPI 核心
+# 后端 RAGAS 评估 API — 仅忠实度（Faithfulness），手动触发
+from fastapi import APIRouter  # 后端 FastAPI 核心
 from pydantic import BaseModel  # 后端 请求模型校验
-from app.services.evaluation_service import run_evaluation  # 后端 核心评估逻辑
 
 router = APIRouter()  # 后端 评估路由
-
-
-class EvaluationRequest(BaseModel):
-    questions: list[str]  # 后端 评估问题列表
-    ground_truths: list[str]  # 后端 参考答案列表（和 questions 一一对应）
-
-
-@router.post("/evaluate")
-async def evaluate_rag(request: EvaluationRequest):
-    """
-    后端 RAGAS 评估接口
-    接收 { questions: [...], ground_truths: [...] }
-    返回 faithfulness / answer_relevancy / context_precision / context_recall 等指标
-    """
-    if not request.questions:  # 后端 问题列表为空
-        raise HTTPException(status_code=400, detail="questions 不能为空")
-    if len(request.questions) != len(request.ground_truths):  # 后端 问题和参考答案数量不匹配
-        raise HTTPException(
-            status_code=400,
-            detail=f"questions({len(request.questions)}) 和 ground_truths({len(request.ground_truths)}) 数量不一致"
-        )
-
-    try:
-        result = await run_evaluation(
-            questions=request.questions,
-            ground_truths=request.ground_truths,
-        )
-        return result  # 后端 返回评估结果
-    except ImportError as e:  # 后端 缺少依赖
-        raise HTTPException(status_code=500, detail=f"缺少依赖: {e}")
-    except Exception as e:  # 后端 其他评估异常
-        raise HTTPException(status_code=500, detail=f"评估失败: {str(e)}")
-
-
-class QuickEvaluationRequest(BaseModel):
-    """后端 快速评估 — 只需问题列表，自动用检索到的上下文作为 ground_truth 参考"""
-    questions: list[str]  # 后端 评估问题列表
-
-
-@router.post("/evaluate/quick")
-async def quick_evaluate(request: QuickEvaluationRequest):
-    """
-    后端 快速评估（无需参考答案）
-    用检索到的 Top-1 上下文作为 ground_truth，仅计算 faithfulness 和 answer_relevancy
-    适合没有人工标注参考答案时快速摸底
-    """
-    if not request.questions:
-        raise HTTPException(status_code=400, detail="questions 不能为空")
-
-    from app.services.evaluation_service import _run_retrieval_pipeline, _run_llm_generation  # 后端 直接复用内部函数
-    import asyncio  # 后端 异步
-
-    # 第一步：检索 + 生成
-    answers = []
-    all_contexts = []
-    # 后端 用检索到的第一个上下文片段作为伪参考答案
-    pseudo_ground_truths = []
-
-    for query in request.questions:
-        contexts = _run_retrieval_pipeline(query)
-        answer = await asyncio.to_thread(_run_llm_generation, query, contexts)
-        answers.append(answer)
-        all_contexts.append(contexts)
-        pseudo_ground_truths.append(contexts[0] if contexts else "")  # 后端 Top-1 上下文当参考答案
-
-    # 第二步：用 batch_score() 计算各指标（绕过 evaluate() 的类型不兼容）
-    from ragas.metrics.collections.faithfulness import Faithfulness  # 后端 忠实度
-    from ragas.metrics.collections.answer_relevancy import AnswerRelevancy  # 后端 答案相关性
-    from ragas.metrics.collections.context_precision import ContextPrecision  # 后端 上下文精确度
-    # 构建各指标的 batch 输入
-    faithfulness_inputs = [  # 后端 忠实度：问题+答案+上下文
-        {"user_input": q, "response": a, "retrieved_contexts": c}
-        for q, a, c in zip(request.questions, answers, all_contexts)
-    ]
-    answer_relevancy_inputs = [  # 后端 答案相关性：问题+答案
-        {"user_input": q, "response": a}
-        for q, a in zip(request.questions, answers)
-    ]
-    context_precision_inputs = [  # 后端 上下文精确度：问题+伪参考答案+上下文
-        {"user_input": q, "reference": g, "retrieved_contexts": c}
-        for q, g, c in zip(request.questions, pseudo_ground_truths, all_contexts)
-    ]
-
-    # 在线程池并行计算各指标（asyncio.gather 不阻塞事件循环）
-
-    async def _compute_one_metric(metric_name, metric_cls, metric_inputs):
-        """后端 在主事件循环中用 abatch_score 异步计算，每个指标独立 LLM/Embeddings"""
-        import traceback  # 后端 详细错误栈
-        try:
-            from app.services.evaluation_service import _build_dashscope_llm, _build_dashscope_embeddings
-            llm = _build_dashscope_llm()  # 后端 独立 LLM（避免跨线程事件循环冲突）
-            if metric_name == "answer_relevancy":  # 后端 AnswerRelevancy 还需 embeddings
-                embeddings = _build_dashscope_embeddings()  # 后端 独立嵌入客户端
-                m = metric_cls(llm=llm, embeddings=embeddings)
-            else:  # 后端 Faithfulness / ContextPrecision 只需 LLM
-                m = metric_cls(llm=llm)
-            s = await m.abatch_score(metric_inputs)  # 后端 异步，不阻塞主事件循环
-            return metric_name, round(float(sum(x.value for x in s) / len(s)), 4)
-        except Exception as e:
-            print(f"[快速评估失败] {metric_name}: {e}")
-            traceback.print_exc()
-            return metric_name, f"计算失败: {e}"
-
-    results = await asyncio.gather(
-        _compute_one_metric("faithfulness", Faithfulness, faithfulness_inputs),
-        _compute_one_metric("answer_relevancy", AnswerRelevancy, answer_relevancy_inputs),
-        _compute_one_metric("context_precision", ContextPrecision, context_precision_inputs),
-    )  # 后端 三个指标并行跑，不阻塞事件循环
-
-    scores = {}
-    for name, value in results:
-        scores[name] = value
-
-    from app.core.config import settings as _settings  # 后端 获取当前模型名
-    return {
-        "scores": scores,
-        "note": "快速评估模式：ground_truth 由检索到的 Top-1 上下文替代，context_recall 不可用",
-        "model": _settings.DEFAULT_MODEL,  # 后端 记录评估使用的模型
-    }
 
 
 class AnswerEvalRequest(BaseModel):
@@ -135,14 +15,12 @@ class AnswerEvalRequest(BaseModel):
 @router.post("/evaluate/answer")
 async def evaluate_answer(request: AnswerEvalRequest):
     """
-    后端 直接评估已有回答
+    后端 评估已有回答 — 仅计算忠实度（Faithfulness），~10秒
     优先使用前端传入的 context_text（AI 生成时的上下文），
-    不再重新检索（避免评估上下文和生成上下文不一致导致分数异常）
-    每个指标独立创建 LLM/Embeddings 客户端，在主事件循环中用 abatch_score
+    避免评估上下文和生成上下文不一致
     """
-    import asyncio  # 后端 异步并行
     import traceback  # 后端 详细错误日志
-    from app.services.evaluation_service import _run_retrieval_pipeline, _build_dashscope_llm, _build_dashscope_embeddings
+    from app.services.evaluation_service import _run_retrieval_pipeline, _build_dashscope_llm
 
     # 上下文来源：优先用前端传来的原始上下文（AI 生成时用的），没有才重新检索
     if request.context_text and request.context_text.strip():  # 后端 用 AI 生成时的上下文
@@ -154,44 +32,24 @@ async def evaluate_answer(request: AnswerEvalRequest):
     else:  # 后端 兜底：重新检索
         contexts = _run_retrieval_pipeline(request.question)
 
-    from ragas.metrics.collections.faithfulness import Faithfulness  # 后端 忠实度
-    from ragas.metrics.collections.answer_relevancy import AnswerRelevancy  # 后端 答案相关性
-    from ragas.metrics.collections.context_precision import ContextUtilization  # 后端 上下文利用率（用回答当参考，比伪参考答案合理）
+    from ragas.metrics.collections.faithfulness import Faithfulness  # 后端 忠实度（核心指标：检测幻觉，~10秒）
 
-    # 每个指标独立 LLM/Embeddings 客户端 → 避免跨线程事件循环冲突
-    async def _compute_one(metric_name, metric_cls, metric_inputs, needs_embeddings=False):
-        """后端 在主事件循环中用 abatch_score 异步计算，不阻塞、不跨线程"""
-        try:
-            llm = _build_dashscope_llm()  # 后端 独立 LLM 客户端
-            if needs_embeddings:  # 后端 AnswerRelevancy 需要嵌入模型
-                embeddings = _build_dashscope_embeddings()  # 后端 独立嵌入客户端
-                m = metric_cls(llm=llm, embeddings=embeddings)
-            else:  # 后端 Faithfulness / ContextUtilization 只需 LLM
-                m = metric_cls(llm=llm)
-            s = await m.abatch_score(metric_inputs)  # 后端 异步，不阻塞主事件循环
-            return metric_name, round(float(sum(x.value for x in s) / len(s)), 4)
-        except Exception as e:  # 后端 捕获并记录详细错误
-            print(f"[评估失败] {metric_name}: {e}")
-            traceback.print_exc()
-            return metric_name, f"计算失败: {e}"
-
-    results = await asyncio.gather(
-        _compute_one("faithfulness", Faithfulness,
-            [{"user_input": request.question, "response": request.answer, "retrieved_contexts": contexts}]),
-        _compute_one("answer_relevancy", AnswerRelevancy,
-            [{"user_input": request.question, "response": request.answer}],
-            needs_embeddings=True),
-        _compute_one("context_precision", ContextUtilization,
-            [{"user_input": request.question, "response": request.answer, "retrieved_contexts": contexts}]),
-    )  # 后端 三指标并行跑，不阻塞主事件循环
-
-    scores = {}
-    for name, value in results:
-        scores[name] = value
+    # 只计算忠实度 — 最轻量，检测 AI 是否基于上下文回答、有无编造
+    try:
+        llm = _build_dashscope_llm()  # 后端 独立 LLM 客户端
+        m = Faithfulness(llm=llm)
+        s = await m.abatch_score(
+            [{"user_input": request.question, "response": request.answer, "retrieved_contexts": contexts}]
+        )  # 后端 异步，不阻塞主事件循环
+        score = round(float(sum(x.value for x in s) / len(s)), 4)
+    except Exception as e:  # 后端 捕获并记录详细错误
+        print(f"[评估失败] faithfulness: {e}")
+        traceback.print_exc()
+        score = f"计算失败: {e}"
 
     from app.core.config import settings as _settings
     return {
-        "scores": scores,
-        "note": "使用AI生成时的原始上下文评估，未重新检索" if request.context_text else "未传入上下文，已重新检索",
+        "scores": {"faithfulness": score},
+        "note": "仅计算忠实度（Faithfulness）— 检测回答是否基于上下文、有无幻觉",
         "model": _settings.DEFAULT_MODEL,
     }
