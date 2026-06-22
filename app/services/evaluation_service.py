@@ -16,7 +16,6 @@ def _build_dashscope_llm():
     dashscope_client = AsyncOpenAI(
         api_key=settings.DASHSCOPE_API_KEY,  # 后端 DashScope API Key
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",  # 后端 DashScope 兼容端点
-        max_tokens=4096,  # 后端 加大 max_tokens，避免忠实度评估时输出被截断
     )
     return llm_factory(
         model=settings.DEFAULT_MODEL,  # 后端 用.env中配置的模型（如 qwen3.6-flash）
@@ -125,14 +124,12 @@ async def run_evaluation(
         answers.append(answer)
         all_contexts.append(contexts)
 
-    # 第二步：初始化 metrics + 构建 batch 输入
+    # 第二步：每个指标独立 LLM/Embeddings，用 abatch_score 在主事件循环中异步计算
+    # 避免 batch_score 内部 asyncio.run() 跨线程共享 AsyncOpenAI 导致 httpx 连接冲突
     from ragas.metrics.collections.faithfulness import Faithfulness  # 后端 忠实度
     from ragas.metrics.collections.answer_relevancy import AnswerRelevancy  # 后端 答案相关性
     from ragas.metrics.collections.context_precision import ContextPrecision  # 后端 上下文精确度
     from ragas.metrics.collections.context_recall import ContextRecall  # 后端 上下文召回率
-
-    llm = _build_dashscope_llm()  # 后端 评估法官 LLM
-    embeddings = _build_dashscope_embeddings()  # 后端 嵌入模型
 
     # 各指标的 batch 输入格式（每个 metric 用不同的字段组合）
     faithfulness_inputs = [  # 后端 忠实度：需要问题+答案+上下文
@@ -152,41 +149,31 @@ async def run_evaluation(
         for q, c, g in zip(questions, all_contexts, ground_truths)
     ]
 
-    # 在线程池中调 batch_score()（内部有 asyncio.run，需隔离）
-    def _compute_scores():
-        results = {}
-
-        try:  # 后端 Faithfulness
-            m = Faithfulness(llm=llm)
-            scores_list = m.batch_score(faithfulness_inputs)
-            results["faithfulness"] = round(float(sum(s.value for s in scores_list) / len(scores_list)), 4)
+    # 每个指标独立 LLM/Embeddings 客户端，在主事件循环中用 abatch_score
+    async def _compute_one(metric_name, metric_cls, metric_inputs, needs_embeddings=False):
+        """后端 独立客户端 + abatch_score（异步），不跨线程、不阻塞"""
+        try:
+            llm = _build_dashscope_llm()  # 后端 独立 LLM
+            if needs_embeddings:  # 后端 AnswerRelevancy 需要嵌入
+                emb = _build_dashscope_embeddings()  # 后端 独立嵌入
+                m = metric_cls(llm=llm, embeddings=emb)
+            else:  # 后端 Faithfulness / ContextPrecision / ContextRecall 只需 LLM
+                m = metric_cls(llm=llm)
+            s = await m.abatch_score(metric_inputs)  # 后端 异步，不阻塞主事件循环
+            return metric_name, round(float(sum(x.value for x in s) / len(s)), 4)
         except Exception as e:
-            results["faithfulness"] = f"计算失败: {e}"
+            return metric_name, f"计算失败: {e}"
 
-        try:  # 后端 AnswerRelevancy
-            m = AnswerRelevancy(llm=llm, embeddings=embeddings)
-            scores_list = m.batch_score(answer_relevancy_inputs)
-            results["answer_relevancy"] = round(float(sum(s.value for s in scores_list) / len(scores_list)), 4)
-        except Exception as e:
-            results["answer_relevancy"] = f"计算失败: {e}"
+    results = await asyncio.gather(
+        _compute_one("faithfulness", Faithfulness, faithfulness_inputs),
+        _compute_one("answer_relevancy", AnswerRelevancy, answer_relevancy_inputs, needs_embeddings=True),
+        _compute_one("context_precision", ContextPrecision, context_precision_inputs),
+        _compute_one("context_recall", ContextRecall, context_recall_inputs),
+    )  # 后端 四指标并行跑，不阻塞主事件循环
 
-        try:  # 后端 ContextPrecision
-            m = ContextPrecision(llm=llm)
-            scores_list = m.batch_score(context_precision_inputs)
-            results["context_precision"] = round(float(sum(s.value for s in scores_list) / len(scores_list)), 4)
-        except Exception as e:
-            results["context_precision"] = f"计算失败: {e}"
-
-        try:  # 后端 ContextRecall
-            m = ContextRecall(llm=llm)
-            scores_list = m.batch_score(context_recall_inputs)
-            results["context_recall"] = round(float(sum(s.value for s in scores_list) / len(scores_list)), 4)
-        except Exception as e:
-            results["context_recall"] = f"计算失败: {e}"
-
-        return results
-
-    scores = await asyncio.to_thread(_compute_scores)  # 后端 线程池隔离
+    scores = {}
+    for name, value in results:
+        scores[name] = value
 
     # 第三步：逐题详情
     details = []

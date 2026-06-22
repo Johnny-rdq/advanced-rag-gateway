@@ -261,15 +261,12 @@ function App() {
       // 回答结束后，刷新会话列表
       fetchSessions();
 
-      // 自动评估：在当前消息列表基础上直接计算索引并异步触发，不依赖闭包，不中断已有评估
+      // 自动评估：SSE 流结束后立即触发，不延迟（延迟期间可能被下一条消息打断）
       if (aiText && !aiText.startsWith('✅') && !aiText.startsWith('📎')) {
         const capturedQuestion = userQuery;
         const capturedAnswer = aiText;
-        // 此时 messages 已包含 [..., userMsg, assistantMsg]，AI 索引是最后一个
-        const aiMsgIdx = messages.length + 1; // +1 因为 setMessages 还在批处理中，取新增后的位置
-        setTimeout(() => {
-          evaluateAnswer(aiMsgIdx, capturedQuestion, capturedAnswer);
-        }, 800);
+        const aiMsgIdx = messages.length + 1;
+        evaluateAnswer(aiMsgIdx, capturedQuestion, capturedAnswer);
       }
     } catch (error) {
       setMessages((prev) => {
