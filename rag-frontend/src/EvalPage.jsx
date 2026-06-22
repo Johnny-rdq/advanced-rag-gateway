@@ -6,6 +6,8 @@ function EvalPage({ sessions, API_BASE }) {
   const [messages, setMessages] = useState([]);
   const [evalScores, setEvalScores] = useState({});
   const [evaluatingIdx, setEvaluatingIdx] = useState(null);
+  const [evalTimes, setEvalTimes] = useState({});
+  const [evalErrors, setEvalErrors] = useState({});
 
   useEffect(() => {
     if (selectedId) {
@@ -46,14 +48,20 @@ function EvalPage({ sessions, API_BASE }) {
     if (!question || !answer) return;
     setEvaluatingIdx(msgIdx);
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000);
       const res = await fetch(`${API_BASE}/evaluate/answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question, answer, context_text: contextText || '' }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
       const data = await res.json();
       const scores = data.scores || data;
       setEvalScores(prev => ({ ...prev, [msgIdx]: scores }));
+      setEvalTimes(prev => ({ ...prev, [msgIdx]: data.elapsed_seconds }));
+      setEvalErrors(prev => ({ ...prev, [msgIdx]: data.error || null }));
       fetch(`${API_BASE}/evaluations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -155,6 +163,9 @@ function EvalPage({ sessions, API_BASE }) {
                           }`}>
                             忠实度 {(scoreObj.faithfulness * 100).toFixed(0)}%
                           </span>
+                          {evalTimes[idx] && (
+                            <span className="text-xs text-gray-400">耗时 {evalTimes[idx]} 秒</span>
+                          )}
                           <button
                             onClick={() => evaluateFaithfulness(idx, question, msg.content, msg.context || '')}
                             disabled={evaluatingIdx === idx}
@@ -168,6 +179,14 @@ function EvalPage({ sessions, API_BASE }) {
                           <span className="px-3 py-1 rounded-full bg-red-50 text-red-600 border border-red-200 text-xs font-medium">
                             忠实度 计算失败
                           </span>
+                          {evalErrors[idx] && (
+                            <span className="text-xs text-red-400 max-w-md truncate" title={evalErrors[idx]}>
+                              {evalErrors[idx]}
+                            </span>
+                          )}
+                          {evalTimes[idx] && (
+                            <span className="text-xs text-gray-400">耗时 {evalTimes[idx]} 秒</span>
+                          )}
                           <button
                             onClick={() => evaluateFaithfulness(idx, question, msg.content, msg.context || '')}
                             disabled={evaluatingIdx === idx}

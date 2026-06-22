@@ -13,11 +13,13 @@ def _build_dashscope_llm():
     dashscope_client = AsyncOpenAI(
         api_key=settings.DASHSCOPE_API_KEY,  # 后端 DashScope API Key
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",  # 后端 DashScope 兼容端点
+        timeout=60.0,  # 后端 60秒超时，避免评估卡死
     )
     return llm_factory(
-        model=settings.DEFAULT_MODEL,  # 后端 用.env中配置的模型（如 qwen3.6-flash）
+        model=settings.DEFAULT_MODEL,  # 后端 用.env中配置的模型
         client=dashscope_client,  # 后端 传入 AsyncOpenAI（支持 agenerate）
         temperature=0,  # 后端 评估任务不需要创造性，0 保证一致性
+        max_tokens=4096,  # 后端 加大输出长度，避免 Faithfulness NLI 验证 JSON 被截断
     )
 
 

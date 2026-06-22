@@ -19,6 +19,7 @@ async def evaluate_answer(request: AnswerEvalRequest):
     优先使用前端传入的 context_text（AI 生成时的上下文），
     避免评估上下文和生成上下文不一致
     """
+    import time  # 后端 计时
     import traceback  # 后端 详细错误日志
     from app.services.evaluation_service import _run_retrieval_pipeline, _build_dashscope_llm
 
@@ -32,9 +33,11 @@ async def evaluate_answer(request: AnswerEvalRequest):
     else:  # 后端 兜底：重新检索
         contexts = _run_retrieval_pipeline(request.question)
 
-    from ragas.metrics.collections.faithfulness import Faithfulness  # 后端 忠实度（核心指标：检测幻觉，~10秒）
+    from ragas.metrics.collections.faithfulness import Faithfulness  # 后端 忠实度（核心指标：检测幻觉）
 
-    # 只计算忠实度 — 最轻量，检测 AI 是否基于上下文回答、有无编造
+    t0 = time.time()  # 后端 开始计时
+    # Faithfulness 内部两步：1) 拆解回答为陈述句  2) 逐句 NLI 校验是否被上下文支撑
+    # 共 2 次 LLM 调用，约 8~15 秒
     try:
         llm = _build_dashscope_llm()  # 后端 独立 LLM 客户端
         m = Faithfulness(llm=llm)
@@ -42,14 +45,19 @@ async def evaluate_answer(request: AnswerEvalRequest):
             [{"user_input": request.question, "response": request.answer, "retrieved_contexts": contexts}]
         )  # 后端 异步，不阻塞主事件循环
         score = round(float(sum(x.value for x in s) / len(s)), 4)
+        error_detail = None  # 后端 无错误
     except Exception as e:  # 后端 捕获并记录详细错误
         print(f"[评估失败] faithfulness: {e}")
         traceback.print_exc()
-        score = f"计算失败: {e}"
+        score = None  # 后端 计算失败，分数为空
+        error_detail = str(e)  # 后端 返回错误详情给前端
+    elapsed = round(time.time() - t0, 1)  # 后端 计时（秒）
 
     from app.core.config import settings as _settings
     return {
         "scores": {"faithfulness": score},
+        "elapsed_seconds": elapsed,
+        "error": error_detail,
         "note": "仅计算忠实度（Faithfulness）— 检测回答是否基于上下文、有无幻觉",
         "model": _settings.DEFAULT_MODEL,
     }
