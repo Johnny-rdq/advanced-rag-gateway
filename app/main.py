@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from app.api import chat
+from app.api import evaluation  # 后端 RAGAS 评估 API
 from app.database.sqlite_store import init_db
 from app.database.chroma_store import auto_load_docs
 
@@ -13,6 +14,7 @@ from app.database.chroma_store import auto_load_docs
 async def lifespan(app: FastAPI):
     from app.core.config import settings
     init_db()
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)  # 后端 确保上传目录存在
     auto_load_docs()
     print(
         f"\n[启动] Advanced RAG Gateway 启动成功！\n"
@@ -35,6 +37,7 @@ app.add_middleware(
 
 # API 路由
 app.include_router(chat.router, prefix="/api")
+app.include_router(evaluation.router, prefix="/api")  # 后端 RAGAS 评估路由
 
 # ==================== 静态文件服务 ====================
 

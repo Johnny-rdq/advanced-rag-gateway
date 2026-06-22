@@ -37,3 +37,4 @@ docs/*.pdf
 
 # 临时文件
 output/
+uploads/

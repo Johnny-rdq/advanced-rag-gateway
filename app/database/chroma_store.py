@@ -94,14 +94,28 @@ def _stable_id(text: str, index: int) -> str:
     return f"chunk_{index}_{h}"
 
 
-def add_documents_to_db(doc_chunks: list):
-    """将文本切片存入向量数据库（去重写入）"""
+def add_documents_to_db(doc_chunks: list) -> list[str]:
+    """将文本切片存入向量数据库（去重写入），返回 chunk ID 列表"""
     if not doc_chunks:
-        return
-    chunk_ids = [_stable_id(chunk, i) for i, chunk in enumerate(doc_chunks)]
+        return []  # 后端 空列表直接返回
+    chunk_ids = [_stable_id(chunk, i) for i, chunk in enumerate(doc_chunks)]  # 后端 生成稳定 ID
     # upsert: 已存在的 ID 会更新，新 ID 会插入
     knowledge_collection.upsert(documents=doc_chunks, ids=chunk_ids)
     print(f"[向量库] 成功写入 {len(doc_chunks)} 条文档片段到 ChromaDB！")
+    return chunk_ids  # 后端 返回 ID 列表供调用方存储
+
+
+def delete_chunks_by_ids(chunk_ids: list[str]) -> int:
+    """从 ChromaDB 中删除指定 ID 的文档片段，返回删除数量"""
+    if not chunk_ids:  # 后端 空列表直接返回
+        return 0
+    try:
+        knowledge_collection.delete(ids=chunk_ids)  # 后端 ChromaDB 原生删除
+        print(f"[向量库] 已删除 {len(chunk_ids)} 条文档片段")
+        return len(chunk_ids)  # 后端 返回实际删除数
+    except Exception as e:
+        print(f"[向量库] 删除失败: {e}")
+        return 0  # 后端 删除失败返回 0
 
 
 def query_vector_db(query: str, n_results: int = 5):
@@ -138,10 +152,7 @@ def auto_load_docs():
         return
 
     print("[知识库] 向量库为空，正在扫描 docs 文件夹...")
-    try:
-        import pdfplumber
-    except ImportError:
-        pdfplumber = None
+    from app.services.document_parser import parse_file  # 后端 统一文档解析服务（含 OCR）
 
     all_chunks = []
     for filename in os.listdir(docs_dir):
@@ -151,22 +162,16 @@ def auto_load_docs():
 
         text = ""
         try:
-            if filename.endswith(".pdf") and pdfplumber:
-                with pdfplumber.open(filepath) as pdf:
-                    for page in pdf.pages:
-                        ext = page.extract_text()
-                        if ext:
-                            text += ext + "\n"
-            elif filename.endswith(".txt"):
-                with open(filepath, "r", encoding="utf-8") as f:
-                    text = f.read()
-
-            if text.strip():
-                chunks = [text[i:i + 400] for i in range(0, len(text), 400) if text[i:i + 400].strip()]
-                all_chunks.extend(chunks)
-                print(f"[知识库] 已加载 [{filename}] → {len(chunks)} 条片段")
+            with open(filepath, "rb") as f:  # 后端 二进制读取，传给 parse_file 统一处理
+                file_content = f.read()
+            text = parse_file(file_content, filename)  # 后端 自动选择 pdfplumber / LlamaParse
         except Exception as e:
             print(f"[警告] 读取文件 [{filename}] 失败: {e}")
+
+        if text.strip():
+            chunks = [text[i:i + 400] for i in range(0, len(text), 400) if text[i:i + 400].strip()]
+            all_chunks.extend(chunks)
+            print(f"[知识库] 已加载 [{filename}] → {len(chunks)} 条片段")
 
     if all_chunks:
         add_documents_to_db(all_chunks)

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MessageSquare, Plus, Trash2, Send, Paperclip, Bot, User, Database } from 'lucide-react';
+import { MessageSquare, Plus, Trash2, Send, Paperclip, Bot, User, Database, FileText, BarChart3 } from 'lucide-react';
 import { marked } from 'marked';
 
 const API_BASE = '/api';
@@ -10,11 +10,32 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [evaluatingIdx, setEvaluatingIdx] = useState(null);
+  const [evalScores, setEvalScores] = useState({});
   const chatEndRef = useRef(null);
 
-  // 1. 初始化：获取会话列表
+  const formatFileSize = (bytes) => {
+    if (bytes < 1024) return bytes + 'B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + 'MB';
+  };
+
+  const formatTimeAgo = (dateStr) => {
+    if (!dateStr) return '';
+    const diff = Date.now() - new Date(dateStr + 'Z').getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return '刚刚';
+    if (mins < 60) return mins + '分钟前';
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + '小时前';
+    return Math.floor(hours / 24) + '天前';
+  };
+
+  // 1. 初始化：获取会话列表和文件列表
   useEffect(() => {
     fetchSessions();
+    fetchFiles();
   }, []);
 
   // 2. 自动滚动到底部
@@ -53,10 +74,26 @@ function App() {
   // 加载某个特定会话的聊天记录
   const loadSession = async (sessionId) => {
     setCurrentSessionId(sessionId);
+    setEvalScores({});
+    setMessages([]);
     try {
-      const res = await fetch(`${API_BASE}/sessions/${sessionId}/messages`);
-      const data = await res.json();
-      setMessages(data.messages || []);
+      const [msgRes, evalRes] = await Promise.all([
+        fetch(`${API_BASE}/sessions/${sessionId}/messages`),
+        fetch(`${API_BASE}/evaluations/${sessionId}`),
+      ]);
+      const msgData = await msgRes.json();
+      const savedEvals = await evalRes.json();
+      const msgs = msgData.messages || [];
+      setMessages(msgs);
+      const mapped = {};
+      msgs.forEach((msg, idx) => {
+        if (msg.role === 'user' && savedEvals[msg.content]) {
+          mapped[idx + 1] = savedEvals[msg.content];
+        }
+      });
+      if (Object.keys(mapped).length > 0) {
+        setEvalScores(mapped);
+      }
     } catch (error) {
       console.error('加载记录失败', error);
     }
@@ -65,7 +102,6 @@ function App() {
   // 删除会话
   const deleteSession = async (e, sessionId) => {
     e.stopPropagation();
-    if (!window.confirm('确定要永久删除这个对话吗？')) return;
     try {
       await fetch(`${API_BASE}/sessions/${sessionId}`, { method: 'DELETE' });
       const newSessions = sessions.filter((s) => s.session_id !== sessionId);
@@ -82,6 +118,56 @@ function App() {
     }
   };
 
+  // 获取已上传文件列表
+  const fetchFiles = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/files`);
+      const data = await res.json();
+      setUploadedFiles(data);
+    } catch (error) {
+      console.error('获取文件列表失败', error);
+    }
+  };
+
+  // 删除已上传文件
+  const deleteFile = async (e, fileId) => {
+    e.stopPropagation();
+    if (!window.confirm('确定要删除该文件吗？这将同时删除向量库中的知识片段！')) return;
+    try {
+      await fetch(`${API_BASE}/files/${fileId}`, { method: 'DELETE' });
+      fetchFiles();
+    } catch (error) {
+      console.error('删除文件失败', error);
+    }
+  };
+
+  // 评估某条 AI 回答（msgIdx 用于显示分数位置，question/answer 直接传入避免闭包过期）
+  const evaluateAnswer = async (msgIdx, question, answer) => {
+    if (!question || !answer) return;
+
+    setEvaluatingIdx(msgIdx);
+    try {
+      const res = await fetch(`${API_BASE}/evaluate/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, answer }),
+      });
+      const data = await res.json();
+      const scores = data.scores || data;
+      setEvalScores(prev => ({ ...prev, [msgIdx]: scores }));
+      // 持久化到后端，刷新/重启不丢失
+      fetch(`${API_BASE}/evaluations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: currentSessionId, question, answer, scores }),
+      }).catch(() => {});
+    } catch (error) {
+      console.error('评估失败', error);
+    } finally {
+      setEvaluatingIdx(null);
+    }
+  };
+
   // 上传文件
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
@@ -89,18 +175,13 @@ function App() {
 
     const formData = new FormData();
     formData.append('file', file);
-
-    const tempMsg = { role: 'assistant', content: '⏳ 正在拼命学习文件中...' };
-    setMessages((prev) => [...prev, tempMsg]);
+    formData.append('session_id', currentSessionId);
 
     try {
       const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body: formData });
       const data = await res.json();
-      setMessages((prev) => {
-        const newMsgs = [...prev];
-        newMsgs[newMsgs.length - 1] = { role: 'assistant', content: `✅ **${data.message}**` };
-        return newMsgs;
-      });
+      loadSession(currentSessionId);
+      fetchFiles();
     } catch (error) {
       alert('上传失败，请检查网络或后端状态。');
     }
@@ -179,6 +260,17 @@ function App() {
 
       // 回答结束后，刷新会话列表
       fetchSessions();
+
+      // 自动评估：在当前消息列表基础上直接计算索引并异步触发，不依赖闭包，不中断已有评估
+      if (aiText && !aiText.startsWith('✅') && !aiText.startsWith('📎')) {
+        const capturedQuestion = userQuery;
+        const capturedAnswer = aiText;
+        // 此时 messages 已包含 [..., userMsg, assistantMsg]，AI 索引是最后一个
+        const aiMsgIdx = messages.length + 1; // +1 因为 setMessages 还在批处理中，取新增后的位置
+        setTimeout(() => {
+          evaluateAnswer(aiMsgIdx, capturedQuestion, capturedAnswer);
+        }, 800);
+      }
     } catch (error) {
       setMessages((prev) => {
         const newMsgs = [...prev];
@@ -233,6 +325,36 @@ function App() {
               </button>
             </div>
           ))}
+
+          {uploadedFiles.length > 0 && (
+            <>
+              <div className="pt-3 pb-1 px-2 text-xs font-semibold text-gray-500 uppercase tracking-wider border-t border-gray-700 mt-2">
+                已上传文件
+              </div>
+              {uploadedFiles.map((file) => (
+                <div
+                  key={file.id}
+                  className="group flex items-center justify-between p-2 rounded-lg text-gray-500 hover:bg-gray-800/30 transition-colors"
+                  title={file.original_filename}
+                >
+                  <div className="flex items-center gap-2 overflow-hidden min-w-0">
+                    <FileText className="w-3.5 h-3.5 flex-shrink-0 text-gray-500" />
+                    <div className="truncate text-xs leading-tight">
+                      <div className="truncate">{file.original_filename}</div>
+                      <div className="text-gray-600 text-[10px]">{formatFileSize(file.file_size)} · {file.chunk_count}片段 · {formatTimeAgo(file.uploaded_at)}</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={(e) => deleteFile(e, file.id)}
+                    className="opacity-0 group-hover:opacity-100 hover:text-red-400 transition-opacity p-0.5 flex-shrink-0"
+                    title="删除文件"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </>
+          )}
         </div>
       </div>
 
@@ -247,7 +369,7 @@ function App() {
             <label className="cursor-pointer flex items-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-600 px-4 py-2 rounded-full text-sm font-medium transition-colors border border-gray-200 shadow-sm">
               <Paperclip className="w-4 h-4" />
               <span>喂给AI新知识</span>
-              <input type="file" className="hidden" accept=".txt,.pdf" onChange={handleFileUpload} />
+              <input type="file" className="hidden" accept=".txt,.pdf,.md,.csv,.docx,.doc,.pptx,.ppt,.png,.jpg,.jpeg,.tiff,.bmp,.gif,.xlsx,.xls,.html,.htm" onChange={handleFileUpload} />
             </label>
           </div>
         </div>
@@ -300,6 +422,66 @@ function App() {
                     <div className="mt-2 ml-2 p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-gray-600 leading-relaxed">
                       <div className="font-medium text-amber-700 mb-1">📎 参考来源</div>
                       <div className="whitespace-pre-wrap break-words">{msg.context}</div>
+                    </div>
+                  )}
+
+                  {/* RAG 评估按钮 + 分数 */}
+                  {msg.role === 'assistant' && msg.content && !msg.content.startsWith('✅') && !msg.content.startsWith('📎') && !msg.content.startsWith('❌') && (
+                    <div className="mt-1 ml-2">
+                      {evalScores[idx] ? (
+                        <div className="flex flex-wrap gap-2 text-[11px]">
+                          {evalScores[idx].faithfulness !== undefined && (
+                            typeof evalScores[idx].faithfulness === 'number' ? (
+                              <span className="px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200" title="忠实度：回答是否完全基于提供的上下文">
+                                忠实度 {(evalScores[idx].faithfulness * 100).toFixed(0)}%
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200" title={String(evalScores[idx].faithfulness)}>
+                                忠实度 计算失败
+                              </span>
+                            )
+                          )}
+                          {evalScores[idx].answer_relevancy !== undefined && (
+                            typeof evalScores[idx].answer_relevancy === 'number' ? (
+                              <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200" title="答案相关性：回答与问题的相关程度">
+                                相关性 {(evalScores[idx].answer_relevancy * 100).toFixed(0)}%
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200" title={String(evalScores[idx].answer_relevancy)}>
+                                相关性 计算失败
+                              </span>
+                            )
+                          )}
+                          {evalScores[idx].context_precision !== undefined && (
+                            typeof evalScores[idx].context_precision === 'number' ? (
+                              <span className="px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200" title="上下文精确度：检索到的上下文中有多少真正有用">
+                                精确度 {(evalScores[idx].context_precision * 100).toFixed(0)}%
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200" title={String(evalScores[idx].context_precision)}>
+                                精确度 计算失败
+                              </span>
+                            )
+                          )}
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            const q = messages.slice(0, idx).reverse().find(m => m.role === 'user');
+                            evaluateAnswer(idx, q?.content || '', msg.content);
+                          }}
+                          disabled={evaluatingIdx === idx || isLoading}
+                          className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded-full transition-colors ${
+                            evaluatingIdx === idx
+                              ? 'bg-gray-100 text-gray-400 cursor-wait'
+                              : 'bg-gray-50 text-gray-500 hover:bg-blue-50 hover:text-blue-600 border border-gray-200'
+                          }`}
+                          title="基于当前上下文评估此回答的质量"
+                        >
+                          <BarChart3 className="w-3 h-3" />
+                          {evaluatingIdx === idx ? '评估中...' : 'RAG评估'}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

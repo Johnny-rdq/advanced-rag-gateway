@@ -9,8 +9,13 @@ services:
       - ./my_vector_db:/app/my_vector_db
       # 持久化 SQLite 聊天记录
       - ./app/database/rag_system.db:/app/app/database/rag_system.db
+      # 持久化上传文件
+      - ./uploads:/app/uploads
       # 本地知识库文档（热加载）
       - ./docs:/app/docs
+    environment:
+      # 上传文件存储目录
+      - UPLOAD_DIR=/app/uploads
     env_file:
       - .env
     restart: unless-stopped

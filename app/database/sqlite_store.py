@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import json  # 后端 序列化评估分数
 import uuid
 from datetime import datetime
 
@@ -40,6 +41,33 @@ def init_db():
     except sqlite3.OperationalError:
         cursor.execute("ALTER TABLE chat_messages ADD COLUMN context TEXT DEFAULT ''")
         print("[数据库] 已添加 context 列到 chat_messages")
+
+    # 上传文件记录表（持久化，重启不丢失）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS uploaded_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            original_filename TEXT NOT NULL,
+            file_hash TEXT NOT NULL UNIQUE,
+            file_size INTEGER NOT NULL,
+            chunk_count INTEGER NOT NULL,
+            parsed_text TEXT DEFAULT '',
+            chunk_ids TEXT DEFAULT '',
+            uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 评估结果表（持久化，刷新/重启不丢失）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS evaluations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            question TEXT NOT NULL,
+            answer TEXT DEFAULT '',
+            scores TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
 
     conn.commit()
     conn.close()
@@ -168,6 +196,85 @@ def get_recent_messages(session_id: str, limit: int = 20) -> list:
     return [{"role": r[0], "content": r[1]} for r in rows]
 
 
+# ==================== 上传文件管理 ====================
+
+def insert_uploaded_file(filename: str, original_filename: str, file_hash: str, file_size: int, chunk_count: int, parsed_text: str = "", chunk_ids: str = "") -> int:
+    """插入上传文件记录，返回自增 ID"""
+    conn = sqlite3.connect(DB_PATH)  # 后端 连接 SQLite
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO uploaded_files (filename, original_filename, file_hash, file_size, chunk_count, parsed_text, chunk_ids) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (filename, original_filename, file_hash, file_size, chunk_count, parsed_text, chunk_ids)  # 后端 绑定参数防注入
+    )
+    conn.commit()
+    file_id = cursor.lastrowid  # 后端 获取自增主键
+    conn.close()
+    return file_id  # 后端 返回新记录 ID
+
+
+def get_uploaded_file_by_hash(file_hash: str) -> dict | None:
+    """根据文件哈希查记录（去重用）"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, filename, original_filename, file_hash, file_size, chunk_count, parsed_text, chunk_ids, uploaded_at FROM uploaded_files WHERE file_hash = ?",
+        (file_hash,)  # 后端 哈希唯一索引，最多一条
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:  # 后端 未找到
+        return None
+    return {
+        "id": row[0], "filename": row[1], "original_filename": row[2],
+        "file_hash": row[3], "file_size": row[4], "chunk_count": row[5],
+        "parsed_text": row[6], "chunk_ids": row[7], "uploaded_at": row[8]
+    }  # 后端 返回字典方便上层使用
+
+
+def get_all_uploaded_files() -> list[dict]:
+    """获取所有已上传文件列表"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, filename, original_filename, file_hash, file_size, chunk_count, uploaded_at FROM uploaded_files ORDER BY uploaded_at DESC"
+    )  # 后端 按上传时间倒序，最新的在前面
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "filename": r[1], "original_filename": r[2],
+         "file_hash": r[3], "file_size": r[4], "chunk_count": r[5], "uploaded_at": r[6]}
+        for r in rows
+    ]  # 后端 不返回 parsed_text（太大），前端不需要
+
+
+def get_uploaded_file_by_id(file_id: int) -> dict | None:
+    """根据 ID 获取单条上传记录（删除时用）"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, filename, original_filename, file_hash, file_size, chunk_count, parsed_text, chunk_ids, uploaded_at FROM uploaded_files WHERE id = ?",
+        (file_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": row[0], "filename": row[1], "original_filename": row[2],
+        "file_hash": row[3], "file_size": row[4], "chunk_count": row[5],
+        "parsed_text": row[6], "chunk_ids": row[7], "uploaded_at": row[8]
+    }
+
+
+def delete_uploaded_file(file_id: int) -> None:
+    """删除上传文件记录"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM uploaded_files WHERE id = ?", (file_id,))
+    conn.commit()
+    conn.close()  # 后端 删除记录（磁盘和向量库由调用方处理）
+
+
 def get_messages_for_session(session_id: str) -> dict:
     """获取会话的所有消息（用于前端，含来源）"""
     conn = sqlite3.connect(DB_PATH)
@@ -180,3 +287,39 @@ def get_messages_for_session(session_id: str) -> dict:
     conn.close()
     messages = [{"role": r[0], "content": r[1], "context": r[2] or ""} for r in rows]
     return {"session_id": session_id, "messages": messages}
+
+
+# ==================== 评估结果管理 ====================
+
+def save_evaluation(session_id: str, question: str, answer: str, scores: dict) -> int:
+    """保存一条评估结果，返回自增 ID"""
+    conn = sqlite3.connect(DB_PATH)  # 后端 连接 SQLite
+    cursor = conn.cursor()
+    scores_json = json.dumps(scores)  # 后端 序列化评分
+    cursor.execute(
+        "INSERT INTO evaluations (session_id, question, answer, scores) VALUES (?, ?, ?, ?)",
+        (session_id, question, answer, scores_json)  # 后端 绑定参数
+    )
+    conn.commit()
+    eval_id = cursor.lastrowid  # 后端 获取自增主键
+    conn.close()
+    return eval_id  # 后端 返回新记录 ID
+
+
+def get_evaluations_for_session(session_id: str) -> dict[str, dict]:
+    """获取指定会话的所有评估结果，返回 {question: scores} 映射"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT question, scores FROM evaluations WHERE session_id = ? ORDER BY created_at ASC",
+        (session_id,)  # 后端 按时间正序
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    result = {}
+    for r in rows:
+        try:
+            result[r[0]] = json.loads(r[1])  # 后端 JSON 反序列化
+        except Exception:
+            result[r[0]] = {}  # 后端 损坏数据返回空
+    return result  # 后端 {question: {faithfulness: 1.0, ...}, ...}

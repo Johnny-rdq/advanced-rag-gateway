@@ -27,7 +27,7 @@ COPY app/ ./app/
 COPY --from=frontend-builder /frontend/dist ./rag-frontend/dist
 
 # 创建必要的目录
-RUN mkdir -p docs my_vector_db
+RUN mkdir -p docs my_vector_db uploads
 
 # 暴露端口
 EXPOSE 8000

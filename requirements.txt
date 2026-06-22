@@ -11,3 +11,15 @@ rank-bm25>=0.2.0
 tavily-python>=0.3.0
 ddgs>=7.0.0
 python-multipart>=0.0.6
+# OpenAI SDK — DashScope 兼容端点（聊天 + 评估 LLM 调用）
+openai>=1.0.0
+# LlamaParse — 复杂文档 OCR 解析（扫描件/图片型PDF/DOCX/PPTX）
+llama-parse>=0.5.0
+# RAGAS — RAG 质量评估
+ragas>=0.2.0
+# 评估数据集处理
+datasets>=3.0.0
+# LangChain OpenAI 桥接 — DashScope 兼容接口供 RAGAS 做 LLM Judge
+langchain-openai>=0.3.0
+# LangChain Google VertexAI 兼容补丁 — ragas 0.4.x 需要
+langchain-google-vertexai>=2.0.0

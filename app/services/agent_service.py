@@ -2,13 +2,17 @@
 import json
 import asyncio
 import jieba
-import dashscope
+from openai import OpenAI  # 后端 用 OpenAI 兼容端点调 DashScope，支持 qwen3.6 系列
 from app.core.config import settings
 from app.services.tools import search_internet, get_real_weather, AGENT_TOOLS, get_last_web_sources
 from app.database.chroma_store import knowledge_collection
 from app.database.sqlite_store import save_message_with_source, get_recent_messages
 
-dashscope.api_key = settings.DASHSCOPE_API_KEY
+# 后端 OpenAI 兼容客户端（DashScope 端点）
+_client = OpenAI(
+    api_key=settings.DASHSCOPE_API_KEY,
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
 
 # 全局 HybridRetriever + Reranker 实例（懒加载）
 _retriever = None
@@ -128,19 +132,18 @@ async def qwen_llm_generator(query: str, session_id: str):
         await asyncio.sleep(0)
 
         response = await asyncio.to_thread(
-            dashscope.Generation.call,
+            _client.chat.completions.create,  # 后端 用 OpenAI 兼容端点（支持 qwen3.6-flash/plus）
             model=settings.DEFAULT_MODEL,
             messages=messages,
             tools=AGENT_TOOLS,
-            result_format='message'
         )
 
-        if response.status_code != 200:
-            yield f"data: LLM调用失败: {response.message}\n\n"
-            save_message_with_source(session_id, "assistant", f"LLM调用失败: {response.message}", "")
+        if not response.choices:  # 后端 响应为空，不是 HTTP 错误
+            yield f"data: LLM调用失败: 无响应\n\n"
+            save_message_with_source(session_id, "assistant", "LLM调用失败: 无响应", "")
             return
 
-        msg = response.output.choices[0].message
+        msg = response.choices[0].message
         tool_calls = _get_attr(msg, 'tool_calls', None)
 
         # 5. 工具调用分支（天气 / 联网搜索）
@@ -182,18 +185,17 @@ async def qwen_llm_generator(query: str, session_id: str):
 
             # 第二次 LLM 调用，整合工具结果
             final_resp = await asyncio.to_thread(
-                dashscope.Generation.call,
+                _client.chat.completions.create,  # 后端 OpenAI 兼容端点
                 model=settings.DEFAULT_MODEL,
                 messages=messages,
-                result_format='message'
             )
-            if final_resp.status_code == 200:
-                final_text = final_resp.output.choices[0].message.content or ''
+            if final_resp.choices:
+                final_text = final_resp.choices[0].message.content or ''
                 for i in range(0, len(final_text), 6):
                     yield f"data: {final_text[i:i + 6]}\n\n"
                     await asyncio.sleep(0.005)
             else:
-                yield f"data: 生成失败: {final_resp.message}\n\n"
+                yield f"data: 生成失败: 无响应\n\n"
 
             # 工具场景结束后也发送来源
             if source_text:
