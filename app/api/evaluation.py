@@ -129,27 +129,34 @@ class AnswerEvalRequest(BaseModel):
     """后端 评估已有回答 — 不重新生成，直接用聊天中的回答评估"""
     question: str  # 后端 用户问题
     answer: str  # 后端 AI 已有的回答（来自聊天，不需要 LLM 重新生成）
+    context_text: str = ""  # 后端 AI 生成时使用的原始上下文（前端 msg.context），避免评估时重新检索拿到不同的上下文
 
 
 @router.post("/evaluate/answer")
 async def evaluate_answer(request: AnswerEvalRequest):
     """
-    后端 直接评估已有回答（不重新生成，比 /evaluate/quick 快很多）
-    流程：检索上下文 → 异步并行计算三指标 → 返回分数
-    每个指标独立创建 LLM/Embeddings 客户端，在主事件循环中用 abatch_score，
-    避免 batch_score 内部 asyncio.run() 跨线程共享 AsyncOpenAI 导致 httpx 连接冲突
+    后端 直接评估已有回答
+    优先使用前端传入的 context_text（AI 生成时的上下文），
+    不再重新检索（避免评估上下文和生成上下文不一致导致分数异常）
+    每个指标独立创建 LLM/Embeddings 客户端，在主事件循环中用 abatch_score
     """
     import asyncio  # 后端 异步并行
     import traceback  # 后端 详细错误日志
     from app.services.evaluation_service import _run_retrieval_pipeline, _build_dashscope_llm, _build_dashscope_embeddings
 
-    # 检索上下文
-    contexts = _run_retrieval_pipeline(request.question)
-    pseudo_gt = contexts[0] if contexts else ""  # 后端 Top-1 上下文当伪参考答案
+    # 上下文来源：优先用前端传来的原始上下文（AI 生成时用的），没有才重新检索
+    if request.context_text and request.context_text.strip():  # 后端 用 AI 生成时的上下文
+        # 按双换行或单换行拆成多个上下文片段（和检索返回的格式一致）
+        raw_contexts = [c.strip() for c in request.context_text.split("\n\n") if c.strip()]  # 后端 先按段落拆
+        if len(raw_contexts) <= 1:  # 后端 段落拆分不开就按行拆
+            raw_contexts = [c.strip() for c in request.context_text.split("\n") if c.strip()]
+        contexts = raw_contexts[:3]  # 后端 最多取3段
+    else:  # 后端 兜底：重新检索
+        contexts = _run_retrieval_pipeline(request.question)
 
     from ragas.metrics.collections.faithfulness import Faithfulness  # 后端 忠实度
     from ragas.metrics.collections.answer_relevancy import AnswerRelevancy  # 后端 答案相关性
-    from ragas.metrics.collections.context_precision import ContextPrecision  # 后端 上下文精确度
+    from ragas.metrics.collections.context_precision import ContextUtilization  # 后端 上下文利用率（用回答当参考，比伪参考答案合理）
 
     # 每个指标独立 LLM/Embeddings 客户端 → 避免跨线程事件循环冲突
     async def _compute_one(metric_name, metric_cls, metric_inputs, needs_embeddings=False):
@@ -159,10 +166,9 @@ async def evaluate_answer(request: AnswerEvalRequest):
             if needs_embeddings:  # 后端 AnswerRelevancy 需要嵌入模型
                 embeddings = _build_dashscope_embeddings()  # 后端 独立嵌入客户端
                 m = metric_cls(llm=llm, embeddings=embeddings)
-            else:  # 后端 Faithfulness / ContextPrecision 只需 LLM
+            else:  # 后端 Faithfulness / ContextUtilization 只需 LLM
                 m = metric_cls(llm=llm)
-            # 关键：用 abatch_score（异步）替代 batch_score（内部 asyncio.run 开新事件循环）
-            s = await m.abatch_score(metric_inputs)
+            s = await m.abatch_score(metric_inputs)  # 后端 异步，不阻塞主事件循环
             return metric_name, round(float(sum(x.value for x in s) / len(s)), 4)
         except Exception as e:  # 后端 捕获并记录详细错误
             print(f"[评估失败] {metric_name}: {e}")
@@ -175,8 +181,8 @@ async def evaluate_answer(request: AnswerEvalRequest):
         _compute_one("answer_relevancy", AnswerRelevancy,
             [{"user_input": request.question, "response": request.answer}],
             needs_embeddings=True),
-        _compute_one("context_precision", ContextPrecision,
-            [{"user_input": request.question, "reference": pseudo_gt, "retrieved_contexts": contexts}]),
+        _compute_one("context_precision", ContextUtilization,
+            [{"user_input": request.question, "response": request.answer, "retrieved_contexts": contexts}]),
     )  # 后端 三指标并行跑，不阻塞主事件循环
 
     scores = {}
@@ -186,6 +192,6 @@ async def evaluate_answer(request: AnswerEvalRequest):
     from app.core.config import settings as _settings
     return {
         "scores": scores,
-        "note": "直接评估模式：使用已有回答，未重新生成，不阻塞聊天",
+        "note": "使用AI生成时的原始上下文评估，未重新检索" if request.context_text else "未传入上下文，已重新检索",
         "model": _settings.DEFAULT_MODEL,
     }

@@ -141,8 +141,8 @@ function App() {
     }
   };
 
-  // 评估某条 AI 回答（msgIdx 用于显示分数位置，question/answer 直接传入避免闭包过期）
-  const evaluateAnswer = async (msgIdx, question, answer) => {
+  // 评估某条 AI 回答（传入原始上下文，避免评估时重新检索拿到不同内容）
+  const evaluateAnswer = async (msgIdx, question, answer, contextText) => {
     if (!question || !answer) return;
 
     setEvaluatingIdx(msgIdx);
@@ -150,7 +150,7 @@ function App() {
       const res = await fetch(`${API_BASE}/evaluate/answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, answer }),
+        body: JSON.stringify({ question, answer, context_text: contextText || '' }),
       });
       const data = await res.json();
       const scores = data.scores || data;
@@ -261,12 +261,13 @@ function App() {
       // 回答结束后，刷新会话列表
       fetchSessions();
 
-      // 自动评估：SSE 流结束后立即触发，不延迟（延迟期间可能被下一条消息打断）
+      // 自动评估：传入 AI 生成时用的原始上下文，避免评估重新检索拿到不同内容
       if (aiText && !aiText.startsWith('✅') && !aiText.startsWith('📎')) {
         const capturedQuestion = userQuery;
         const capturedAnswer = aiText;
+        const capturedContext = sourceText;
         const aiMsgIdx = messages.length + 1;
-        evaluateAnswer(aiMsgIdx, capturedQuestion, capturedAnswer);
+        evaluateAnswer(aiMsgIdx, capturedQuestion, capturedAnswer, capturedContext);
       }
     } catch (error) {
       setMessages((prev) => {
@@ -465,7 +466,7 @@ function App() {
                         <button
                           onClick={() => {
                             const q = messages.slice(0, idx).reverse().find(m => m.role === 'user');
-                            evaluateAnswer(idx, q?.content || '', msg.content);
+                            evaluateAnswer(idx, q?.content || '', msg.content, msg.context || '');
                           }}
                           disabled={evaluatingIdx === idx || isLoading}
                           className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded-full transition-colors ${
