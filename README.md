@@ -42,7 +42,7 @@ advanced_rag_gateway/
 |------|------|
 | 🔍 **混合检索** | BM25 关键词检索 + ChromaDB 语义检索 → 去重 → Rerank 精排 |
 | 📄 **文件管理** | 上传 TXT/PDF/DOCX/PPTX/图片等，SHA256 去重，持久化存储，前端列表管理 |
-| 📊 **自动评估** | 每条 AI 回复自动触发 RAGAS 评估（忠实度/相关性/精确度），三指标并行计算 |
+| 📊 **忠实度评估** | 手动触发 RAGAS Faithfulness 评估，检测 AI 回答是否存在幻觉 |
 | 💾 **评估持久化** | 评估分数存入 SQLite，刷新页面或重启服务不丢失 |
 | 🌐 **联网搜索** | DuckDuckGo（免费，国内直连）优先，Tavily API 备用 |
 | 🌤️ **天气查询** | 通过 wttr.in 实时查询任意城市天气 |
@@ -139,8 +139,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 | `POST` | `/api/upload` | 上传文件到知识库（SHA256 去重） |
 | `GET` | `/api/files` | 获取已上传文件列表 |
 | `DELETE` | `/api/files/{id}` | 删除已上传文件（级联删除向量库片段） |
-| `POST` | `/api/evaluate/quick` | 快速评估（重新生成答案） |
-| `POST` | `/api/evaluate/answer` | 直接评估已有回答（不重新生成，更快） |
+| `POST` | `/api/evaluate/answer` | 评估已有回答的忠实度（Faithfulness） |
 | `POST` | `/api/evaluations` | 保存评估结果 |
 | `GET` | `/api/evaluations/{session_id}` | 获取会话的评估历史 |
 | `GET` | `/api/debug` | 查看当前配置 |
@@ -158,7 +157,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 | **大语言模型** | 阿里云 DashScope（通义千问 Qwen，OpenAI 兼容端点） |
 | **关键词检索** | BM25（jieba 分词） |
 | **关系数据库** | SQLite（会话/消息/文件/评估记录） |
-| **RAG 评估** | RAGAS（忠实度/相关性/精确度，三指标并行） |
+| **RAG 评估** | RAGAS Faithfulness（忠实度，检测幻觉） |
 | **联网搜索** | DuckDuckGo + Tavily（备用） |
 | **前端** | React + Vite + Tailwind CSS + Lucide Icons |
 
@@ -194,7 +193,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ▼
 ┌─────────────────────────────────┐
 │  SSE 流式输出 + 资料来源展示     │
-│  → 自动触发 RAGAS 评估（三指标并行）│
+│  → 评估面板手动触发忠实度评估     │
 │  → 评估分数自动存入 SQLite       │
 └─────────────────────────────────┘
 ```
@@ -244,8 +243,10 @@ docker compose down
 | 2026-06-17 | Docker 构建失败：Vite 需要 Node.js 20.19+ | 升级 `node:18-alpine` → `node:22-alpine` |
 | 2026-06-17 | Docker 构建 pip 下载慢/超时 | 切换清华 PyPI 镜像 + 淘宝 npm 镜像 |
 | 2026-06-22 | `qwen3.6-flash`/`qwen3.6-plus` 报 URL 错误 | DashScope 原生 API 不支持 qwen3.6 系列，全部迁移到 OpenAI 兼容端点 |
-| 2026-06-22 | RAGAS 评估超时（>2分钟） | 三指标并行计算 + 直接用已有回答评估（不重新生成），耗时从 114s 降到 62s |
+| 2026-06-22 | RAGAS 评估超时（>2分钟） | 精简为仅忠实度单指标 + 直接用已有回答评估，耗时大幅降低 |
 | 2026-06-22 | 评估分数刷新后显示 `?%` | 修复前端评估加载逻辑，消息和评估并行请求，去掉 setTimeout 延迟 |
+| 2026-06-23 | LLM 调用卡死不响应 | Windows hosts 文件 ZYACC 非法条目导致 httpx DNS 解析失败，加 httpx.Timeout + asyncio.wait_for 三层超时兜底 |
+| 2026-06-23 | 评估忠实度一直卡在"评估中" | 绕过 RAGAS llm_factory 的 Mode.JSON 硬编码，改用 Mode.MD_JSON 兼容千问 thinking mode + 禁用 thinking 加速评估 |
 
 ---
 

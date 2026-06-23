@@ -1,4 +1,5 @@
 import os
+import re  # 后端 hosts 文件格式校验
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,12 +11,45 @@ from app.database.sqlite_store import init_db
 from app.database.chroma_store import auto_load_docs
 
 
+def _check_hosts_file():
+    """后端 启动时检查 hosts 文件是否有非法格式条目（如 ZYACC 加速器残留）"""
+    hosts_path = r"C:\Windows\System32\drivers\etc\hosts"
+    if not os.path.exists(hosts_path):  # 后端 非 Windows 或路径不存在，跳过检查
+        return
+    try:
+        with open(hosts_path, "r", encoding="utf-8-sig") as f:  # 后端 utf-8-sig 处理 BOM
+            for lineno, line in enumerate(f, 1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):  # 后端 跳过空行和注释
+                    continue
+                parts = stripped.split()
+                if len(parts) >= 2:  # 后端 标准格式：IP 主机名 [主机名...]
+                    ip_candidate = parts[0]
+                    # 简单 IPv4 校验：x.x.x.x 格式
+                    if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", ip_candidate):
+                        continue  # 后端 合法 IP，跳过
+                # 后端 非法格式 → 打印醒目警告
+                print(f"\n{'='*60}")
+                print(f"[WARNING] hosts 文件第 {lineno} 行格式异常：")
+                print(f"  → {stripped}")
+                print(f"  这会导致 httpx/openai 网络请求卡死（无法解析 DNS）。")
+                print(f"  请以管理员身份编辑 {hosts_path}")
+                print(f"  把这一行注释掉（前面加 #）或删除后重启服务。")
+                print(f"{'='*60}\n")
+                return  # 后端 只报一次，避免刷屏
+    except PermissionError:  # 后端 无权限读取 hosts 文件，静默跳过
+        pass
+    except Exception:  # 后端 其他异常也静默跳过，不影响启动
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.core.config import settings
     init_db()
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)  # 后端 确保上传目录存在
     auto_load_docs()
+    _check_hosts_file()  # 后端 启动时诊断 hosts 文件格式
     print(
         f"\n[启动] Advanced RAG Gateway 启动成功！\n"
         f"[模型] {settings.DEFAULT_MODEL}\n"

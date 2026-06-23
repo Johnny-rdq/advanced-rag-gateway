@@ -1,25 +1,41 @@
 # 后端 RAGAS 评估服务 — LLM 客户端 + 检索管道（供 evaluation API 复用）
+from httpx import Timeout  # 后端 httpx 超时对象，必须用对象而非 float，否则 DNS 异常时可能不生效
 from app.core.config import settings  # 后端 DashScope API Key / 模型名
 
 
-def _build_dashscope_llm():
+def _build_instructor_llm():
     """
-    后端 用 openai.AsyncOpenAI + ragas.llm_factory 桥接 DashScope OpenAI 兼容接口
-    RAGAS 0.4.x collections 指标内部调 agenerate() → 必须用 AsyncOpenAI 客户端
+    后端 直接创建 instructor 包装的 LLM（绕过 ragas.llm_factory 的 Mode.JSON 硬编码）
+    RAGAS 的 llm_factory 内部固定使用 Mode.JSON，千问/DashScope 可能不完全兼容
+    这里用 Mode.TOOLS（function calling）或降级到 Mode.MD_JSON（markdown 提取）
     """
-    from openai import AsyncOpenAI  # 后端 OpenAI 异步客户端（RAGAS 内部调 agenerate 需要）
-    from ragas.llms import llm_factory  # 后端 RAGAS LLM 工厂函数
+    from openai import AsyncOpenAI  # 后端 OpenAI 异步客户端
+    from instructor import from_openai, Mode  # 后端 instructor 客户端包装
+    from ragas.llms.base import InstructorLLM, InstructorModelArgs  # 后端 RAGAS LLM 包装
 
+    # 后端 用 httpx.Timeout 对象显式设置超时（float 在 httpx 0.28+ 解析 hosts 文件异常时可能不生效）
+    _httpx_timeout = Timeout(60.0, connect=10.0, read=55.0, write=30.0, pool=5.0)
     dashscope_client = AsyncOpenAI(
-        api_key=settings.DASHSCOPE_API_KEY,  # 后端 DashScope API Key
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",  # 后端 DashScope 兼容端点
-        timeout=60.0,  # 后端 60秒超时，避免评估卡死
+        api_key=settings.DASHSCOPE_API_KEY,
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        timeout=_httpx_timeout,
+        max_retries=1,  # 后端 最多重试1次，避免无限重试
     )
-    return llm_factory(
-        model=settings.DEFAULT_MODEL,  # 后端 用.env中配置的模型
-        client=dashscope_client,  # 后端 传入 AsyncOpenAI（支持 agenerate）
-        temperature=0,  # 后端 评估任务不需要创造性，0 保证一致性
-        max_tokens=4096,  # 后端 加大输出长度，避免 Faithfulness NLI 验证 JSON 被截断
+
+    # 后端 DashScope 千问 thinking mode 与 tool_choice=required 互斥
+    # Mode.TOOLS 会设 tool_choice="required" → 400 错误
+    # Mode.JSON 用 response_format (json_object) → 千问可能不完全支持
+    # Mode.MD_JSON 纯文本提取 markdown JSON → 最兼容，不依赖任何特殊 API 参数
+    _mode = Mode.MD_JSON  # 后端 markdown JSON 提取，兼容 thinking mode
+    patched_client = from_openai(dashscope_client, mode=_mode)
+    print(f"[评估-LLM] instructor 包装完成，mode={_mode}（兼容千问 thinking mode）")
+
+    return InstructorLLM(
+        client=patched_client,
+        model=settings.DEFAULT_MODEL,
+        provider="openai",
+        model_args=InstructorModelArgs(temperature=0.0, max_tokens=4096),
+        extra_body={"enable_thinking": False},  # 后端 禁用千问 thinking，评估任务不需要思考，大幅加速
     )
 
 

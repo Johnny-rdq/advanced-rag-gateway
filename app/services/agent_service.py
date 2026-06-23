@@ -2,6 +2,7 @@
 import json
 import asyncio
 import jieba
+from httpx import Timeout  # 后端 httpx 超时配置，须在 OpenAI 客户端之前 import
 from openai import OpenAI  # 后端 用 OpenAI 兼容端点调 DashScope，支持 qwen3.6 系列
 from app.core.config import settings
 from app.services.tools import search_internet, get_real_weather, AGENT_TOOLS, get_last_web_sources
@@ -9,9 +10,11 @@ from app.database.chroma_store import knowledge_collection
 from app.database.sqlite_store import save_message_with_source, get_recent_messages
 
 # 后端 OpenAI 兼容客户端（DashScope 端点）
+# 必须设置 timeout，否则 DNS 解析失败时（如 hosts 文件损坏）会无限卡死
 _client = OpenAI(
     api_key=settings.DASHSCOPE_API_KEY,
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    timeout=Timeout(60.0, connect=10.0),  # 后端 总超时60s，连接超时10s，防卡死
 )
 
 # 全局 HybridRetriever + Reranker 实例（懒加载）
@@ -131,12 +134,29 @@ async def qwen_llm_generator(query: str, session_id: str):
         yield "data: [THINKING]: 正在分析...\n\n"
         await asyncio.sleep(0)
 
-        response = await asyncio.to_thread(
-            _client.chat.completions.create,  # 后端 用 OpenAI 兼容端点（支持 qwen3.6-flash/plus）
-            model=settings.DEFAULT_MODEL,
-            messages=messages,
-            tools=AGENT_TOOLS,
-        )
+        # 后端 asyncio.wait_for 兜底超时 65s（httpx timeout=60s + 5s buffer），防止 hosts 文件损坏等网络异常卡死
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _client.chat.completions.create,  # 后端 用 OpenAI 兼容端点（支持 qwen3.6-flash/plus）
+                    model=settings.DEFAULT_MODEL,
+                    messages=messages,
+                    tools=AGENT_TOOLS,
+                ),
+                timeout=65.0,  # 后端 比 httpx timeout 多 5s buffer
+            )
+        except asyncio.TimeoutError:
+            yield "data: LLM调用超时（65秒无响应）。请检查网络连接，或 hosts 文件是否有非法条目（如 ZYACC）。\n\n"
+            save_message_with_source(session_id, "assistant", "LLM调用超时", "")
+            return
+        except Exception as api_err:
+            err_msg = str(api_err)
+            if "hosts" in err_msg.lower() or "parse" in err_msg.lower():
+                yield f"data: 网络错误：hosts文件解析失败（可能包含非法条目如ZYACC）。请修复 C:\\Windows\\System32\\drivers\\etc\\hosts 文件第一行。原始错误: {err_msg}\n\n"
+            else:
+                yield f"data: LLM调用失败: {err_msg}\n\n"
+            save_message_with_source(session_id, "assistant", f"LLM调用失败: {err_msg}", "")
+            return
 
         if not response.choices:  # 后端 响应为空，不是 HTTP 错误
             yield f"data: LLM调用失败: 无响应\n\n"
@@ -183,12 +203,26 @@ async def qwen_llm_generator(query: str, session_id: str):
             })
             messages.append({"role": "tool", "tool_call_id": tc_id, "content": str(tool_result)})
 
-            # 第二次 LLM 调用，整合工具结果
-            final_resp = await asyncio.to_thread(
-                _client.chat.completions.create,  # 后端 OpenAI 兼容端点
-                model=settings.DEFAULT_MODEL,
-                messages=messages,
-            )
+            # 第二次 LLM 调用，整合工具结果（同样加超时防卡死）
+            try:
+                final_resp = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _client.chat.completions.create,  # 后端 OpenAI 兼容端点
+                        model=settings.DEFAULT_MODEL,
+                        messages=messages,
+                    ),
+                    timeout=65.0,  # 后端 总超时65s
+                )
+            except asyncio.TimeoutError:
+                yield "data: 工具调用后LLM响应超时\n\n"
+                if source_text:
+                    yield f"data: [SOURCE]: {source_text}\n\n"
+                return
+            except Exception as api_err:
+                yield f"data: 工具调用后LLM失败: {str(api_err)}\n\n"
+                if source_text:
+                    yield f"data: [SOURCE]: {source_text}\n\n"
+                return
             if final_resp.choices:
                 final_text = final_resp.choices[0].message.content or ''
                 for i in range(0, len(final_text), 6):
